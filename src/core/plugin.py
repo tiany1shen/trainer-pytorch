@@ -6,7 +6,8 @@ from typing_extensions import TypedDict, NotRequired, override
 import torch as th
 from torch.optim import Optimizer 
 from torch.cuda.amp.grad_scaler import GradScaler
-from .module import Network
+from torch.utils.tensorboard.writer import SummaryWriter
+from .module import Network, LossManager
 
 if TYPE_CHECKING:
     from .trainer import Trainer
@@ -50,7 +51,7 @@ class BasePlugin:
     def log_prefix(self) -> str: return f"[PLUGIN]({self.name})"
     
     def log(self, message: str) -> None:
-        print(self.log_prefix + message)
+        print(self.log_prefix + ' ' + message)
 
 
 class PluginPriorityQueue:
@@ -300,6 +301,13 @@ class SavePlugin(BasePlugin):
         .save_optimizer(optimizer, save_dir / "optimizer_state_dict.pth")
         .save_scaler(scaler, save_dir / "scaler_state_dict.pth")
         )
+    
+    @property
+    def state(self):
+        return {
+            "save diretory": self.save_dir,
+            "save period": self.period
+        }
 
 class EpochSavePlugin(SavePlugin):
     def __init__(self, save_dir: str, period: int) -> None:
@@ -319,6 +327,13 @@ class EpochSavePlugin(SavePlugin):
             epoch_save_dir: Path = self.save_dir / f"epoch-{self.trainer.epoch}"
             epoch_save_dir.mkdir(parents=True, exist_ok=True)
             self.save(epoch_save_dir, *args, **kwargs)
+    
+    @override
+    @property
+    def state(self):
+        state = super().state
+        state.update({"save level": "epoch"})
+        return state
 
 class StepSavePlugin(SavePlugin):
     def __init__(self, save_dir: str, period: int) -> None:
@@ -330,7 +345,7 @@ class StepSavePlugin(SavePlugin):
         super().__init__(save_dir, period, hook_info)
     
     def is_enable_step(self) -> bool:
-        return self.trainer.epoch % self.period == 0
+        return self.trainer.step % self.period == 0
     
     @override
     def step_end_func(self, *args, **kwargs) -> None:
@@ -338,7 +353,13 @@ class StepSavePlugin(SavePlugin):
             epoch_save_dir: Path = self.save_dir / f"step-{self.trainer.step}"
             epoch_save_dir.mkdir(parents=True, exist_ok=True)
             self.save(epoch_save_dir, *args, **kwargs)
-
+    
+    @override
+    @property
+    def state(self):
+        state = super().state
+        state.update({"save level": "step"})
+        return state
 
 class AdjustLearningRatePlugin(BasePlugin):
     """ 
@@ -385,5 +406,56 @@ class AdjustLearningRatePlugin(BasePlugin):
                 epoch_index=self.trainer.epoch,
                 param_group_index=i
             )
+    
+    @override
+    @property
+    def state(self):
+        return {}
 
-#todo logging / tensorboard ...
+
+def repr_number(num):
+    if num < 1_000:
+        return f"{num:>3}"
+    elif num < 1_000_000:
+        return f"{num/1000:>4} K"
+    elif num < 1_000_000_000:
+        return f"{num/1_000_000:>4} M"
+    else:
+        return f"{num/1_000_000_000:>4} B"
+
+
+class LossLoggerPlugin(BasePlugin):
+    def __init__(self, period: int):
+        hook_info: HookInfo = {
+            "step_end": {
+                "priority": 5,
+                "description": f"Log message every {period} steps."
+            }
+        }
+        super().__init__(hook_info)
+        self.period: int = period
+    
+    def is_enable_step(self) -> bool:
+        return self.period == 1 or self.trainer.step % self.period == 1
+    
+    @override
+    def step_end_func(self, loss_fn: LossManager, *args, **kwargs):
+        if self.is_enable_step():
+            loss_dict = loss_fn.extract_values()
+            data_fed = self.trainer.batch_size * (self.trainer.step-1)
+            if self.trainer.logger is None:
+                msg = f"|{repr_number(data_fed)}| " 
+                msg += " | ".join(f"{name}_loss: {value:.2e}" for name, value in loss_dict.items())
+                self.log(msg)
+            elif isinstance(self.trainer.logger, SummaryWriter):
+                total_loss = 0
+                for name, weight in zip(loss_dict, loss_fn.loss_weights):
+                    tag = f"loss/{name}"
+                    value = loss_dict[name]
+                    total_loss += value * weight
+                    self.trainer.logger.add_scalar(tag, value, data_fed)
+                if len(loss_dict) > 1:
+                    self.trainer.logger.add_scalar("loss/total", total_loss, data_fed)
+            
+        
+    

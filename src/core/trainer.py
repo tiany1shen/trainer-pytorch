@@ -3,6 +3,7 @@ import torch.nn as th_nn
 import torch.optim as th_optim
 import torch.utils.data as th_data
 
+from pathlib import Path
 from typing import Optional, Sequence, Tuple, cast, Callable
 from torch.cuda.amp.autocast_mode import autocast
 from torch.cuda.amp.grad_scaler import GradScaler
@@ -42,7 +43,8 @@ class Trainer:
         device: str | int = "cpu",
         enable_auto_mixed_precision: bool = True,
         
-        log_tool: Optional[str] = "tensorboard"
+        log_tool: Optional[str] = "tensorboard",
+        log_dir: Optional[str] = None
     ) -> None:
         # hyper params
         self.epoch_duration: int = epoch
@@ -62,8 +64,8 @@ class Trainer:
         self.amp_enabled = enable_auto_mixed_precision
         
         self.check_setup()
-        self.plugins = self.init_plugins([ReinitNetworkWeightsPlugin()])
-        
+        self.plugins = self.register_plugins([ReinitNetworkWeightsPlugin()])
+        self.logger = self.register_logger(log_tool, Path(log_dir, exp_name))
     
     def check_setup(self) -> None:
         if self.batch_size % self.gradient_accumulation_step != 0:
@@ -102,6 +104,7 @@ class Trainer:
             "network": network,
             "optimizer": optimizer,
             "scaler": grad_scaler,
+            "loss_fn": loss_fn
         }
         
         self.plugins.loop_beg_func(**training_modules)
@@ -178,8 +181,13 @@ class Trainer:
         self._start_epoch = state_dict['epoch']
         self.rng = RandomNumberState(state_dict['random_seed'])
     
+    def register_logger(self, log_tool, log_dir):
+        if log_tool is None:
+            return None
+        elif log_tool == "tensorboard":
+            return SummaryWriter(log_dir)
     
-    def init_plugins(self, plugins: Sequence[BasePlugin]) -> PluginPriorityQueue:
+    def register_plugins(self, plugins: Sequence[BasePlugin]) -> PluginPriorityQueue:
         for plug in plugins:
             plug.trainer = self 
         return PluginPriorityQueue(plugins)

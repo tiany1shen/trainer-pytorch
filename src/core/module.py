@@ -73,8 +73,8 @@ class Network(th_nn.Module):
     """
     
     def __init__(self, network: th_nn.Module, device: Optional[Union[th.device, str, int]] = None) -> None:
+        super().__init__()
         self.network = deepcopy(network)
-        
         if device is not None:
             self.network = self.network.to(device)
     
@@ -255,7 +255,7 @@ class LossManager(ScalarManager[th.Tensor]):
     
     def summary_loss(self, loss_dict: Mapping[str, th.Tensor]) -> th.Tensor:
         self.check_result(loss_dict)
-        total_loss = th.tensor(0.)
+        total_loss = 0
         for k, w in zip(self.loss_names, self.loss_weights):
             total_loss += loss_dict[k].mean() * w 
         return total_loss
