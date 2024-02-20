@@ -328,8 +328,8 @@ class EpochSavePlugin(SavePlugin):
             epoch_save_dir.mkdir(parents=True, exist_ok=True)
             self.save(epoch_save_dir, *args, **kwargs)
     
-    @override
     @property
+    @override
     def state(self):
         state = super().state
         state.update({"save level": "epoch"})
@@ -354,8 +354,8 @@ class StepSavePlugin(SavePlugin):
             epoch_save_dir.mkdir(parents=True, exist_ok=True)
             self.save(epoch_save_dir, *args, **kwargs)
     
-    @override
     @property
+    @override
     def state(self):
         state = super().state
         state.update({"save level": "step"})
@@ -407,8 +407,8 @@ class AdjustLearningRatePlugin(BasePlugin):
                 param_group_index=i
             )
     
-    @override
     @property
+    @override
     def state(self):
         return {}
 
@@ -430,6 +430,10 @@ class LossLoggerPlugin(BasePlugin):
             "step_end": {
                 "priority": 5,
                 "description": f"Log message every {period} steps."
+            },
+            "loop_end": {
+                "priority": 5,
+                "description": "close writer."
             }
         }
         super().__init__(hook_info)
@@ -456,6 +460,10 @@ class LossLoggerPlugin(BasePlugin):
                     self.trainer.logger.add_scalar(tag, value, data_fed)
                 if len(loss_dict) > 1:
                     self.trainer.logger.add_scalar("loss/total", total_loss, data_fed)
-            
+    
+    @override
+    def loop_end_func(self, *args, **kwargs):
+        if isinstance(self.trainer.logger, SummaryWriter):
+            self.trainer.logger.close()
         
     

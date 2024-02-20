@@ -12,6 +12,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from .module import SizedDataset, Network, LossManager
 from .reproduce import RandomNumberState
 from .plugin import PluginPriorityQueue, BasePlugin, ReinitNetworkWeightsPlugin
+from .optim import default_optim_fn
 
 
 class Trainer:
@@ -46,6 +47,7 @@ class Trainer:
         log_tool: Optional[str] = "tensorboard",
         log_dir: Optional[str] = None
     ) -> None:
+        self.exp_name = exp_name
         # hyper params
         self.epoch_duration: int = epoch
         self.batch_size: int = batch_size
@@ -65,7 +67,7 @@ class Trainer:
         
         self.check_setup()
         self.plugins = self.register_plugins([ReinitNetworkWeightsPlugin()])
-        self.logger = self.register_logger(log_tool, Path(log_dir, exp_name))
+        self.logger = self.register_logger(log_tool, log_dir)
     
     def check_setup(self) -> None:
         if self.batch_size % self.gradient_accumulation_step != 0:
@@ -86,7 +88,7 @@ class Trainer:
         dataset: th_data.Dataset, 
         network: th_nn.Module,
         losses: Tuple[Sequence, ...],    # zip(loss_names, loss_fns, loss_weights)
-        optim_fn: Callable[[th_nn.Module], th_optim.Optimizer], # a function to build optimizer
+        optim_fn = default_optim_fn, # a function to build optimizer
     ) -> None:
         #! on-going
         #todo: TRAIN-LOOP 
@@ -185,6 +187,10 @@ class Trainer:
         if log_tool is None:
             return None
         elif log_tool == "tensorboard":
+            if log_dir is None:
+                log_dir = Path("tb_log", self.exp_name)
+            else:
+                log_dir = Path(log_dir, self.exp_name)
             return SummaryWriter(log_dir)
     
     def register_plugins(self, plugins: Sequence[BasePlugin]) -> PluginPriorityQueue:
