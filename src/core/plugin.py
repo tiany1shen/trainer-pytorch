@@ -27,8 +27,11 @@ class HookInfo(TypedDict):
 class BasePlugin:
     trainer: 'Trainer'
     hook_info: HookInfo
+    debug: bool
     
-    def __init__(self, hook_info) -> None: self.hook_info = hook_info
+    def __init__(self, hook_info) -> None: 
+        self.hook_info = hook_info
+        self.debug = False
     def loop_beg_func(self, *args, **kwargs): ... 
     def loop_end_func(self, *args, **kwargs): ...
     def epoch_beg_func(self, *args, **kwargs):...
@@ -48,10 +51,11 @@ class BasePlugin:
             "\n".join(f"\t{key}: {value}" for key, value in self.state.items())
     
     @property
-    def log_prefix(self) -> str: return f"[PLUGIN]({self.name})"
+    def log_prefix(self) -> str: return f"({self.name})"
     
     def log(self, message: str) -> None:
-        print(self.log_prefix + ' ' + message)
+        if self.debug:
+            print(self.log_prefix + ' ' + message)
 
 
 class PluginPriorityQueue:
@@ -159,12 +163,12 @@ class ReinitNetworkWeightsPlugin(BasePlugin):
                     *args, **kwargs):
         if self.enabled:
             if self.weight_file is not None:
-                self.log(f"Re-initialize network weights from '{self.weight_file}'")
+                self.log(f"[LOOP BEG] Re-initialize network weights from '{self.weight_file}'")
             else:
-                self.log("Re-initialize network weights randomly.")
+                self.log("[LOOP BEG] Re-initialize network weights randomly.")
             network.init_weight(state_dict=self.get_state_dict(), strict=self.strict, device=self.trainer.device)
         else:
-            self.log("Do not re-initialize network weights again.")
+            self.log("[LOOP BEG] Do not re-initialize network weights again.")
     
     def get_state_dict(self):
         if self.weight_file is not None:
@@ -215,16 +219,6 @@ class LoadTrainerStatePlugin(BasePlugin):
                 self.optimizer_file = Path(optimizer_file)
             if scaler_file is not None:
                 self.scaler_file = Path(scaler_file)
-        
-    __doc__ = r""" 
-    分别加载 trainer, network, optimizer, grad scaler 四个 module 的状态
-    
-    1. 如果初始化时给出了 checkpoint_path 参数，则其他参数不起作用，state_dict 文件将从 
-        checkpoint_path 目录下面自动寻找。
-    2. 未给出 checkpoint_path 参数时，可以指定其他路径参数，对应的 module 将会加载相应路径的文件。
-    3. 如果给出 network_file 参数，则关闭 trainer 的 init_network_weight 开关，在相关 hook 
-        中不在随机初始化网络权重。
-    """
     
     @override
     def loop_beg_func(self, 
@@ -234,20 +228,20 @@ class LoadTrainerStatePlugin(BasePlugin):
                     scaler: GradScaler,
                     *args, **kwargs) -> None:
         if self.trainer_file is not None:
-            self.log(f"Loading checkpoint from '{self.trainer_file.parent}'.")
+            self.log(f"[LOOP BEG] Loading checkpoint from '{self.trainer_file.parent}'.")
             trainer.load_state_dict(th.load(self.trainer_file))
         
         if self.network_file is not None:
-            self.log(f"Loading network weights from '{self.network_file}'.")
+            self.log(f"[LOOP BEG] Loading network weights from '{self.network_file}'.")
             network.init_weight(state_dict=th.load(self.network_file), strict=self.strict, device=self.trainer.device)
             self.trainer.disable_reinit()
         
         if self.optimizer_file is not None:
-            self.log(f"Loading optimizer state from '{self.optimizer_file}'.")
+            self.log(f"[LOOP BEG] Loading optimizer state from '{self.optimizer_file}'.")
             optimizer.load_state_dict(th.load(self.optimizer_file))
         
         if self.scaler_file is not None:
-            self.log(f"Loading grad scaler state from '{self.scaler_file}'.")
+            self.log(f"[LOOP BEG] Loading grad scaler state from '{self.scaler_file}'.")
             scaler.load_state_dict(th.load(self.scaler_file))
 
     @property
@@ -269,22 +263,18 @@ class SavePlugin(BasePlugin):
         self.period: int = period
     
     def save_trainer(self, trainer: 'Trainer', save_path: Path):
-        self.log(f"Saving trainer to '{save_path}'")
         th.save(trainer.state_dict(), save_path)
         return self
     
     def save_network(self, network: Network, save_path: Path):
-        self.log(f"Saving network to '{save_path}'")
         th.save(network.unwrap_model.state_dict(), save_path)
         return self
     
     def save_optimizer(self, optimizer: Optimizer, save_path: Path):
-        self.log(f"Saving optimizer to '{save_path}'")
         th.save(optimizer.state_dict(), save_path)
         return self
     
     def save_scaler(self, scaler: GradScaler, save_path: Path):
-        self.log(f"Saving scaler to '{save_path}'")
         th.save(scaler.state_dict(), save_path)
         return self
     
@@ -310,7 +300,7 @@ class SavePlugin(BasePlugin):
         }
 
 class EpochSavePlugin(SavePlugin):
-    def __init__(self, save_dir: str, period: int) -> None:
+    def __init__(self, period: int, save_dir: str = "outputs/checkpoints") -> None:
         hook_info: HookInfo = {
             "epoch_end": {
                 "priority": 5,
@@ -324,8 +314,9 @@ class EpochSavePlugin(SavePlugin):
     @override
     def epoch_end_func(self, *args, **kwargs) -> None:
         if self.is_enable_epoch():
-            epoch_save_dir: Path = self.save_dir / f"epoch-{self.trainer.epoch}"
+            epoch_save_dir: Path = self.save_dir / self.trainer.exp_name / f"epoch-{self.trainer.epoch}"
             epoch_save_dir.mkdir(parents=True, exist_ok=True)
+            self.log(f"[EPOCH {self.trainer.epoch} END] Saving checkpoint files to '{epoch_save_dir}'.")
             self.save(epoch_save_dir, *args, **kwargs)
     
     @property
@@ -336,7 +327,7 @@ class EpochSavePlugin(SavePlugin):
         return state
 
 class StepSavePlugin(SavePlugin):
-    def __init__(self, save_dir: str, period: int) -> None:
+    def __init__(self, period: int, save_dir: str = "outputs/checkpoints") -> None:
         hook_info: HookInfo = {
             "step_end": {
                 "priority": 5,
@@ -350,9 +341,10 @@ class StepSavePlugin(SavePlugin):
     @override
     def step_end_func(self, *args, **kwargs) -> None:
         if self.is_enable_step():
-            epoch_save_dir: Path = self.save_dir / f"step-{self.trainer.step}"
-            epoch_save_dir.mkdir(parents=True, exist_ok=True)
-            self.save(epoch_save_dir, *args, **kwargs)
+            step_save_dir: Path = self.save_dir / f"step-{self.trainer.step}"
+            step_save_dir.mkdir(parents=True, exist_ok=True)
+            self.log(f"[STEP {self.trainer.step} END] Saving checkpoint files to '{step_save_dir}'.")
+            self.save(step_save_dir, *args, **kwargs)
     
     @property
     @override
@@ -431,39 +423,61 @@ class LossLoggerPlugin(BasePlugin):
                 "priority": 5,
                 "description": f"Log message every {period} steps."
             },
+            "loop_beg": {
+                "priority": 5,
+                "description": "Check & create writer"
+            },
             "loop_end": {
                 "priority": 5,
-                "description": "close writer."
+                "description": "Close writer."
             }
         }
         super().__init__(hook_info)
         self.period: int = period
     
     def is_enable_step(self) -> bool:
-        return self.period == 1 or self.trainer.step % self.period == 1
+        return self.trainer.step % self.period == 0
+    
+    def parse_tb_log_dir(self):
+        if self.trainer.log_dir is None:
+            return Path("tb-logs", self.trainer.exp_name)
+        else:
+            return Path(self.trainer.log_dir, self.trainer.exp_name)
+    
+    @override
+    def loop_beg_func(self, *args, **kwargs):
+        if self.trainer.logger_type == "console":
+            self.log("[LOOP BEG] Loss will be printed on console.")
+        elif self.trainer.logger_type == "tensorboard":
+            self.log("[LOOP BEG] Loss will be logged by TensorBoard.")
+            if not hasattr(self.trainer, "tb_logger"):
+                log_dir = self.parse_tb_log_dir()
+                self.trainer.tb_logger = SummaryWriter(log_dir=log_dir)
+                self.trainer.log_dir = self.trainer.tb_logger.get_logdir()
+    
+    @override
+    def loop_end_func(self, *args, **kwargs):
+        if self.trainer.logger_type == "tensorboard":
+            self.log("[LOOP END] Close TensorBoard writer.")
+            self.trainer.tb_logger.close()
     
     @override
     def step_end_func(self, loss_fn: LossManager, *args, **kwargs):
         if self.is_enable_step():
+            self.log(f"[STEP {self.trainer.step} END] Record losses into logs.")
             loss_dict = loss_fn.extract_values()
-            data_fed = self.trainer.batch_size * (self.trainer.step-1)
-            if self.trainer.logger is None:
-                msg = f"|{repr_number(data_fed)}| " 
+            data_fed = self.trainer.batch_size * self.trainer.step
+            if self.trainer.logger_type == "console":
+                msg = f"|DATA FED: {repr_number(data_fed)}| " 
                 msg += " | ".join(f"{name}_loss: {value:.2e}" for name, value in loss_dict.items())
-                self.log(msg)
-            elif isinstance(self.trainer.logger, SummaryWriter):
-                total_loss = 0
+                print(msg)
+            elif self.trainer.logger_type == "tensorboard":
+                total_loss = 0.0
                 for name, weight in zip(loss_dict, loss_fn.loss_weights):
                     tag = f"loss/{name}"
                     value = loss_dict[name]
                     total_loss += value * weight
-                    self.trainer.logger.add_scalar(tag, value, data_fed)
+                    self.trainer.tb_logger.add_scalar(tag, value, data_fed)
                 if len(loss_dict) > 1:
-                    self.trainer.logger.add_scalar("loss/total", total_loss, data_fed)
-    
-    @override
-    def loop_end_func(self, *args, **kwargs):
-        if isinstance(self.trainer.logger, SummaryWriter):
-            self.trainer.logger.close()
-        
-    
+                    self.trainer.tb_logger.add_scalar("loss/total", total_loss, data_fed)
+            loss_fn.empty_cache()

@@ -33,13 +33,13 @@ class SizedDataset(th_data.Dataset):
     """
     def __init__(self, dataset: th_data.Dataset):
         super().__init__()
-        self.dataset = dataset
+        self.unwrap_dataset = dataset
     
     def __getitem__(self, index: int):
-        return self.dataset[index]
+        return self.unwrap_dataset[index]
     
     def __len__(self) -> int:
-        return len(cast(Sized, self.dataset))
+        return len(cast(Sized, self.unwrap_dataset))
 
 #===============================================================================
 #   Network
@@ -134,6 +134,10 @@ class Tracker(Generic[T_val]):
         self.store_fn: Callable[[T_val], T_val] = store_fn
         
         self.cache: deque[T_val] = deque(maxlen=maxlen)
+        self.max_len: int = maxlen
+    
+    def empty(self):
+        self.cache = deque(maxlen=self.max_len)
     
     @property
     def storage(self) -> Sequence[T_val]: return list(self.cache)
@@ -212,6 +216,10 @@ class ScalarManager(Generic[T_val]):
             scalar_dict[name] = self.trackers[name].extract()
         return scalar_dict
     
+    def empty_cache(self) -> None:
+        for name in self.trackers:
+            self.trackers[name].empty()
+    
     @property
     def storage(self) -> Mapping[str, Sequence[T_val]]:
         return {name: self.trackers[name].storage for name in self.scalar_names}
@@ -253,7 +261,7 @@ class LossManager(ScalarManager[th.Tensor]):
             loss_dict[name] = loss_fn(network, batch_input)
         return loss_dict
     
-    def summary_loss(self, loss_dict: Mapping[str, th.Tensor]) -> th.Tensor:
+    def summary_loss(self, loss_dict: Mapping[str, th.Tensor]):
         self.check_result(loss_dict)
         total_loss = 0
         for k, w in zip(self.loss_names, self.loss_weights):

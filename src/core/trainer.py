@@ -2,9 +2,9 @@ import torch
 import torch.nn as th_nn
 import torch.optim as th_optim
 import torch.utils.data as th_data
-
+import datetime
 from pathlib import Path
-from typing import Optional, Sequence, Tuple, cast, Callable
+from typing import Optional, Sequence, Tuple, cast, Literal
 from torch.cuda.amp.autocast_mode import autocast
 from torch.cuda.amp.grad_scaler import GradScaler
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -44,14 +44,17 @@ class Trainer:
         device: str | int = "cpu",
         enable_auto_mixed_precision: bool = True,
         
-        log_tool: Optional[str] = "tensorboard",
-        log_dir: Optional[str] = None
+        plugin_debug: bool = False,
+        log_tool: Literal["console", "tensorboard"] = "tensorboard",
+        log_dir: str = "tb-logs",
+        
     ) -> None:
         self.exp_name = exp_name
         # hyper params
         self.epoch_duration: int = epoch
         self.batch_size: int = batch_size
         self.gradient_accumulation_step: int = gradient_accumulation_step
+        self.plugin_debug = plugin_debug
         
         # local index counter, start from 1
         self._local_epoch: int 
@@ -67,7 +70,9 @@ class Trainer:
         
         self.check_setup()
         self.plugins = self.register_plugins([ReinitNetworkWeightsPlugin()])
-        self.logger = self.register_logger(log_tool, log_dir)
+        self.logger_type = log_tool
+        self.log_dir = log_dir
+        self.tb_logger: SummaryWriter
     
     def check_setup(self) -> None:
         if self.batch_size % self.gradient_accumulation_step != 0:
@@ -90,8 +95,6 @@ class Trainer:
         losses: Tuple[Sequence, ...],    # zip(loss_names, loss_fns, loss_weights)
         optim_fn = default_optim_fn, # a function to build optimizer
     ) -> None:
-        #! on-going
-        #todo: TRAIN-LOOP 
         dataset = SizedDataset(dataset)
         network = Network(network, self.device)
         loss_fn = LossManager(*losses)
@@ -108,7 +111,7 @@ class Trainer:
             "scaler": grad_scaler,
             "loss_fn": loss_fn
         }
-        
+        self.beg_info(dataset=dataset, **training_modules)
         self.plugins.loop_beg_func(**training_modules)
         
         for _ in range(self.epoch_duration):
@@ -148,6 +151,7 @@ class Trainer:
                     
             self.plugins.epoch_end_func(**training_modules)
         self.plugins.loop_end_func(**training_modules)
+        self.end_info()
     
     def build_dataloader(self, dataset: SizedDataset, num_workers: int = 4) -> th_data.DataLoader:
         # build a :class:`torch.utils.DataLoader` based on given dataset.
@@ -183,23 +187,17 @@ class Trainer:
         self._start_epoch = state_dict['epoch']
         self.rng = RandomNumberState(state_dict['random_seed'])
     
-    def register_logger(self, log_tool, log_dir):
-        if log_tool is None:
-            return None
-        elif log_tool == "tensorboard":
-            if log_dir is None:
-                log_dir = Path("tb_log", self.exp_name)
-            else:
-                log_dir = Path(log_dir, self.exp_name)
-            return SummaryWriter(log_dir)
-    
     def register_plugins(self, plugins: Sequence[BasePlugin]) -> PluginPriorityQueue:
-        for plug in plugins:
-            plug.trainer = self 
+        for plugin in plugins:
+            plugin.trainer = self 
+        if self.plugin_debug:
+            plugin.debug = True
         return PluginPriorityQueue(plugins)
     
     def append_plugin(self, plugin: BasePlugin):
         plugin.trainer = self
+        if self.plugin_debug:
+            plugin.debug = True
         self.plugins.append(plugin)
         return self
     
@@ -220,3 +218,30 @@ class Trainer:
     def disable_reinit(self):
         self.reinit_plugin.disable()
         return self
+    
+    def beg_info(self, dataset, network, loss_fn, optimizer, *args, **kwargs):
+        print("Training Info:\n")
+        print(f"- number of epoch: {self.epoch_duration}")
+        print(f"- batch size: {self.batch_size}")
+        print(f"- device: {self.device}")
+        print(f"- logged by: {self.logger_type}")
+        
+        print("\nTraining Modules:\n")
+        print(f"- dataset: {dataset.unwrap_dataset.__class__.__name__}")
+        print(f"- network: {network.unwrap_model.__class__.__name__}")
+        print(f"- optimizer: {optimizer.__class__.__name__}")
+        print("- Loss(es) containing:")
+        for i, name in enumerate(loss_fn.loss_names):
+            print(f"\t{i+1}. {name}")
+        
+        print(f"\n{self.plugins}")
+        
+        self.begin_time = datetime.datetime.now()
+        print(f"\nTraining begins at: {self.begin_time}")
+    
+    def end_info(self):
+        self.end_time = datetime.datetime.now()
+        print(f"\nTraining ends at: {self.end_time} | Total time: {self.end_time - self.begin_time}")
+        if self.logger_type == "tensorboard":
+            print(f"\nTensorBoard logs diretory: {Path(self.log_dir).parent.absolute()}")
+        
