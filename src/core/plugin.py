@@ -479,5 +479,5 @@ class LossLoggerPlugin(BasePlugin):
                     total_loss += value * weight
                     self.trainer.tb_logger.add_scalar(tag, value, data_fed)
                 if len(loss_dict) > 1:
-                    self.trainer.tb_logger.add_scalar("loss/total", total_loss, data_fed)
+                    self.trainer.tb_logger.add_scalar("total_loss", total_loss, data_fed)
             loss_fn.empty_cache()

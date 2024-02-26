@@ -92,12 +92,12 @@ class Trainer:
         self, *,
         dataset: th_data.Dataset, 
         network: th_nn.Module,
-        losses: Tuple[Sequence, ...],    # zip(loss_names, loss_fns, loss_weights)
+        losses: dict,
         optim_fn = default_optim_fn, # a function to build optimizer
     ) -> None:
         dataset = SizedDataset(dataset)
         network = Network(network, self.device)
-        loss_fn = LossManager(*losses)
+        loss_fn = self.build_loss_fn(**losses)
         grad_scaler = GradScaler(enabled=self.amp_enabled)
         
         optimizer: th_optim.Optimizer = optim_fn(network.unwrap_model)
@@ -161,6 +161,20 @@ class Trainer:
         random_sampler = th_data.RandomSampler(dataset, num_samples=total_samples)
         return th_data.DataLoader(dataset, mini_batch_size, 
                             sampler=random_sampler, num_workers=num_workers)
+    
+    def build_loss_fn(self, losses: dict, weights: Optional[dict] = None, network_call = None):
+        names = []
+        loss_fns = []
+        loss_weights = []
+        for name in losses:
+            names.append(name)
+            loss_fns.append(losses[name])
+            if weights is None or name not in weights:
+                w = 1.0 
+            else:
+                w = weights[name]
+            loss_weights.append(w)
+        return LossManager(names, loss_fns, loss_weights, network_call)
     
     @property
     def epoch(self) -> int:

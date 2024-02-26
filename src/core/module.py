@@ -242,6 +242,7 @@ class LossManager(ScalarManager[th.Tensor]):
     def __init__(self, loss_names: Sequence[str], 
                 loss_fns: Sequence[Callable],
                 loss_weights: Optional[Sequence[float]] = None,
+                network_call = None,
                 *,
                 tracker_maxlen: int = 100) -> None:
         super().__init__(loss_names, tracker_maxlen=tracker_maxlen)
@@ -249,6 +250,10 @@ class LossManager(ScalarManager[th.Tensor]):
         if loss_weights is None:
             loss_weights = [1.0 for k in loss_names]
         self.loss_weights: Sequence[float] = list(loss_weights)
+        
+        if network_call is None:
+            network_call = lambda network, batch: network(batch)
+        self.network_call = network_call
     
     @property
     def loss_names(self) -> list[str]:
@@ -256,9 +261,10 @@ class LossManager(ScalarManager[th.Tensor]):
     
     def compute_loss(self, network: Network, batch_input: Batch) -> Mapping[str, th.Tensor]:
         batch_input = move_batch(batch_input, network.device)
+        network_out = self.network_call(network, batch_input)
         loss_dict = {}
         for name, loss_fn in zip(self.loss_names, self.loss_fns):
-            loss_dict[name] = loss_fn(network, batch_input)
+            loss_dict[name] = loss_fn(network_out, batch_input)
         return loss_dict
     
     def summary_loss(self, loss_dict: Mapping[str, th.Tensor]):
